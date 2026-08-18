@@ -1,14 +1,12 @@
 --[[
-    Voxel Blocky Game - Advanced Edition with Carnage & Photorealistic Graphics
+    Voxel Blocky Game - Advanced Edition with Carnage Mode
     Features:
-    - Chunked voxel world with ray-traced lighting
-    - Destructible environments with dynamic physics
-    - Realistic particle effects and blood/gore
+    - Transform into a carnage monster
+    - Bullet physics with reflection
+    - Enemy AI with guns
+    - Grab and ragdoll mechanics
     - PBR (Physically Based Rendering) materials
     - Advanced lighting, shadows, and HDR rendering
-    - Ragdoll physics and carnage systems
-    - Screen-space ambient occlusion
-    - Dynamic reflections and refractions
 ]]--
 
 -- ======================== CONSTANTS ========================
@@ -17,7 +15,7 @@ local WORLD_HEIGHT = 256
 local RENDER_DISTANCE = 10
 local BLOCK_SIZE = 1.0
 
--- Block types with material properties
+-- Block types
 local BLOCK_TYPES = {
     AIR = 0,
     STONE = 1,
@@ -119,6 +117,66 @@ local MATERIALS = {
     },
 }
 
+-- ======================== BULLET PHYSICS ========================
+local Bullet = {}
+Bullet.__index = Bullet
+
+function Bullet:new(x, y, z, vx, vy, vz)
+    local self = setmetatable({}, Bullet)
+    self.x = x
+    self.y = y
+    self.z = z
+    self.vx = vx
+    self.vy = vy
+    self.vz = vz
+    self.age = 0
+    self.maxAge = 10.0
+    self.size = 0.1
+    self.reflections = 0
+    self.maxReflections = 5
+    self.damage = 15
+    self.speed = math.sqrt(vx*vx + vy*vy + vz*vz)
+    return self
+end
+
+function Bullet:update(dt, player)
+    self.x = self.x + self.vx * dt
+    self.y = self.y + self.vy * dt
+    self.z = self.z + self.vz * dt
+    self.age = self.age + dt
+    
+    -- Check collision with carnage player
+    if player.isCarnage then
+        local dx = player.x - self.x
+        local dy = player.y - self.z
+        local dz = player.z - self.z
+        local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+        
+        if dist < player.carnageRadius then
+            -- Reflect bullet
+            local normalX = dx / dist
+            local normalY = dy / dist
+            local normalZ = dz / dist
+            
+            local dotProduct = self.vx * normalX + self.vy * normalY + self.vz * normalZ
+            
+            self.vx = self.vx - 2 * dotProduct * normalX
+            self.vy = self.vy - 2 * dotProduct * normalY
+            self.vz = self.vz - 2 * dotProduct * normalZ
+            
+            self.reflections = self.reflections + 1
+            
+            if self.reflections >= self.maxReflections then
+                self.age = self.maxAge
+            end
+        end
+    end
+end
+
+function Bullet:isAlive()
+    return self.age < self.maxAge
+end
+
 -- ======================== ADVANCED LIGHTING ENGINE ========================
 local LightingEngine = {}
 LightingEngine.__index = LightingEngine
@@ -154,7 +212,6 @@ function LightingEngine:calculatePBR(x, y, z, normal, viewDir, material)
                    self.ambientIntensity * self.ambientColor[2], 
                    self.ambientIntensity * self.ambientColor[3]}
     
-    -- Sun lighting with parallax mapping simulation
     local sunDir = {
         self.sunPosition[1] - x,
         self.sunPosition[2] - y,
@@ -167,11 +224,9 @@ function LightingEngine:calculatePBR(x, y, z, normal, viewDir, material)
         sunDir[3] = sunDir[3] / sunDist
     end
     
-    -- Fresnel effect
     local dotProduct = math.max(0, normal[1] * viewDir[1] + normal[2] * viewDir[2] + normal[3] * viewDir[3])
     local fresnel = 0.04 + (1 - 0.04) * math.pow(1 - dotProduct, 5)
     
-    -- Microfacet distribution (Cook-Torrance)
     local roughness = material.roughness
     local alpha = roughness * roughness
     local halfVector = {sunDir[1] + viewDir[1], sunDir[2] + viewDir[2], sunDir[3] + viewDir[3]}
@@ -185,7 +240,6 @@ function LightingEngine:calculatePBR(x, y, z, normal, viewDir, material)
     local NDotH = math.max(0, normal[1] * halfVector[1] + normal[2] * halfVector[2] + normal[3] * halfVector[3])
     local specular = fresnel * math.pow(math.max(0, 1 - alpha * (1 - NDotH * NDotH)), 2)
     
-    -- Diffuse + Specular blend
     local sunDot = math.max(0, normal[1] * sunDir[1] + normal[2] * sunDir[2] + normal[3] * sunDir[3])
     local specIntensity = material.metallic * 0.8 + (1 - material.metallic) * 0.2
     
@@ -193,7 +247,6 @@ function LightingEngine:calculatePBR(x, y, z, normal, viewDir, material)
     light[2] = light[2] + (sunDot * material.color[2] * (1 - specIntensity) + specular * material.specular[2]) * self.sunColor[2] * self.sunIntensity
     light[3] = light[3] + (sunDot * material.color[3] * (1 - specIntensity) + specular * material.specular[3]) * self.sunColor[3] * self.sunIntensity
     
-    -- Dynamic lights with bloom
     for i = #self.lights, 1, -1 do
         local lamp = self.lights[i]
         lamp.age = lamp.age + 0.016
@@ -218,7 +271,6 @@ function LightingEngine:calculatePBR(x, y, z, normal, viewDir, material)
         end
     end
     
-    -- AO approximation
     light[1] = light[1] * material.ao
     light[2] = light[2] * material.ao
     light[3] = light[3] * material.ao
@@ -332,12 +384,12 @@ function Ragdoll:new(x, y, z, force)
     local self = setmetatable({}, Ragdoll)
     force = force or 1.0
     self.bones = {
-        {x = x, y = y + 0.9, z = z, vx = (math.random() - 0.5) * 10 * force, vy = (math.random() + 0.5) * 10 * force, vz = (math.random() - 0.5) * 10 * force, mass = 4, radius = 0.15, bloodLevel = 0.8}, -- head
-        {x = x, y = y + 0.4, z = z, vx = (math.random() - 0.5) * 8 * force, vy = (math.random() + 0.2) * 5 * force, vz = (math.random() - 0.5) * 8 * force, mass = 8, radius = 0.2, bloodLevel = 1.0}, -- torso
-        {x = x - 0.3, y = y + 0.3, z = z, vx = (math.random() - 0.5) * 15 * force, vy = (math.random() + 0.3) * 8 * force, vz = (math.random() - 0.5) * 15 * force, mass = 2, radius = 0.1, bloodLevel = 0.5}, -- left arm
-        {x = x + 0.3, y = y + 0.3, z = z, vx = (math.random() - 0.5) * 15 * force, vy = (math.random() + 0.3) * 8 * force, vz = (math.random() - 0.5) * 15 * force, mass = 2, radius = 0.1, bloodLevel = 0.5}, -- right arm
-        {x = x - 0.2, y = y - 0.3, z = z, vx = (math.random() - 0.5) * 12 * force, vy = (math.random() + 0.2) * 6 * force, vz = (math.random() - 0.5) * 12 * force, mass = 3, radius = 0.12, bloodLevel = 0.6}, -- left leg
-        {x = x + 0.2, y = y - 0.3, z = z, vx = (math.random() - 0.5) * 12 * force, vy = (math.random() + 0.2) * 6 * force, vz = (math.random() - 0.5) * 12 * force, mass = 3, radius = 0.12, bloodLevel = 0.6}, -- right leg
+        {x = x, y = y + 0.9, z = z, vx = (math.random() - 0.5) * 10 * force, vy = (math.random() + 0.5) * 10 * force, vz = (math.random() - 0.5) * 10 * force, mass = 4, radius = 0.15, bloodLevel = 0.8},
+        {x = x, y = y + 0.4, z = z, vx = (math.random() - 0.5) * 8 * force, vy = (math.random() + 0.2) * 5 * force, vz = (math.random() - 0.5) * 8 * force, mass = 8, radius = 0.2, bloodLevel = 1.0},
+        {x = x - 0.3, y = y + 0.3, z = z, vx = (math.random() - 0.5) * 15 * force, vy = (math.random() + 0.3) * 8 * force, vz = (math.random() - 0.5) * 15 * force, mass = 2, radius = 0.1, bloodLevel = 0.5},
+        {x = x + 0.3, y = y + 0.3, z = z, vx = (math.random() - 0.5) * 15 * force, vy = (math.random() + 0.3) * 8 * force, vz = (math.random() - 0.5) * 15 * force, mass = 2, radius = 0.1, bloodLevel = 0.5},
+        {x = x - 0.2, y = y - 0.3, z = z, vx = (math.random() - 0.5) * 12 * force, vy = (math.random() + 0.2) * 6 * force, vz = (math.random() - 0.5) * 12 * force, mass = 3, radius = 0.12, bloodLevel = 0.6},
+        {x = x + 0.2, y = y - 0.3, z = z, vx = (math.random() - 0.5) * 12 * force, vy = (math.random() + 0.2) * 6 * force, vz = (math.random() - 0.5) * 12 * force, mass = 3, radius = 0.12, bloodLevel = 0.6},
     }
     self.life = 8.0
     self.decayTime = 15.0
@@ -370,7 +422,6 @@ function Ragdoll:update(dt, world, particles)
             bone.vx = bone.vx * 0.99
             bone.vz = bone.vz * 0.99
             
-            -- Blood trail
             if math.random() < 0.3 then
                 table.insert(self.bloodTrail, {
                     x = bone.x,
@@ -381,14 +432,12 @@ function Ragdoll:update(dt, world, particles)
                 })
             end
             
-            -- Simple collision
             if bone.y < 1 then
                 bone.y = 1
                 bone.vy = bone.vy * -0.2
                 bone.vx = bone.vx * 0.7
                 bone.vz = bone.vz * 0.7
                 
-                -- Create blood splat on ground
                 if particles and bone.bloodLevel > 0 then
                     particles:emitBlood(bone.x, bone.y + 0.1, bone.z, 8, 0.3)
                     bone.bloodLevel = bone.bloodLevel - 0.05
@@ -400,7 +449,6 @@ function Ragdoll:update(dt, world, particles)
     self.life = self.life - dt
     self.decayTime = self.decayTime - dt
     
-    -- Severing logic
     if self.health < 50 and math.random() < 0.01 then
         local limbIndex = math.random(3, 6)
         self.severed[limbIndex] = true
@@ -408,6 +456,174 @@ function Ragdoll:update(dt, world, particles)
             particles:emitBlood(self.bones[limbIndex].x, self.bones[limbIndex].y, self.bones[limbIndex].z, 25, 2.0)
         end
     end
+end
+
+-- ======================== ENEMY SOLDIER ========================
+local Enemy = {}
+Enemy.__index = Enemy
+
+function Enemy:new(x, y, z, player)
+    local self = setmetatable({}, Enemy)
+    self.x = x
+    self.y = y
+    self.z = z
+    self.vx = 0
+    self.vy = 0
+    self.vz = 0
+    self.yaw = 0
+    self.pitch = 0
+    
+    self.health = 100
+    self.maxHealth = 100
+    self.speed = 0.15
+    self.width = 0.6
+    self.height = 1.8
+    self.isGrounded = false
+    
+    self.shootTimer = 0
+    self.shootInterval = 1.5
+    self.fireRate = 0.1
+    self.bullets = {}
+    self.player = player
+    
+    self.state = "patrol" -- patrol, chase, shoot
+    self.patrolTimer = 0
+    self.patrolTarget = {x = x + math.random(-20, 20), z = z + math.random(-20, 20)}
+    
+    self.chaseRange = 50
+    self.shootRange = 40
+    self.detectionRange = 60
+    
+    return self
+end
+
+function Enemy:update(dt, world, player)
+    local dx = player.x - self.x
+    local dz = player.z - self.z
+    local dist = math.sqrt(dx*dx + dz*dz)
+    
+    -- AI state machine
+    if dist < self.detectionRange then
+        if dist < self.shootRange then
+            self.state = "shoot"
+        else
+            self.state = "chase"
+        end
+    else
+        self.state = "patrol"
+    end
+    
+    if self.state == "patrol" then
+        self:patrol(dt, world)
+    elseif self.state == "chase" then
+        self:chase(dt, world, dx, dz)
+    elseif self.state == "shoot" then
+        self:shoot(dt, world, dx, dz)
+    end
+    
+    -- Update position
+    self.x = self.x + self.vx * dt
+    self.y = self.y + self.vy * dt
+    self.z = self.z + self.vz * dt
+    
+    -- Gravity
+    self.vy = self.vy - 25 * dt
+    
+    -- Collision
+    self:handleCollisions(world)
+    
+    -- Update bullets
+    for i = #self.bullets, 1, -1 do
+        self.bullets[i]:update(dt, player)
+        if not self.bullets[i]:isAlive() then
+            table.remove(self.bullets, i)
+        end
+    end
+    
+    self.shootTimer = self.shootTimer - dt
+end
+
+function Enemy:patrol(dt, world)
+    local dx = self.patrolTarget.x - self.x
+    local dz = self.patrolTarget.z - self.z
+    local dist = math.sqrt(dx*dx + dz*dz)
+    
+    if dist < 5 then
+        self.patrolTarget = {x = self.x + math.random(-20, 20), z = self.z + math.random(-20, 20)}
+    else
+        local angle = math.atan2(dz, dx)
+        self.vx = math.cos(angle) * self.speed
+        self.vz = math.sin(angle) * self.speed
+    end
+end
+
+function Enemy:chase(dt, world, dx, dz)
+    local dist = math.sqrt(dx*dx + dz*dz)
+    if dist > 0 then
+        self.vx = (dx / dist) * self.speed * 1.5
+        self.vz = (dz / dist) * self.speed * 1.5
+        self.yaw = math.atan2(dz, dx)
+    end
+end
+
+function Enemy:shoot(dt, world, dx, dz)
+    local dist = math.sqrt(dx*dx + dz*dz)
+    if dist > 0 then
+        self.yaw = math.atan2(dz, dx)
+        local dy = self.player.y - self.y
+        self.pitch = math.atan2(dy, dist)
+    end
+    
+    self.vx = 0
+    self.vz = 0
+    
+    -- Fire bullets
+    if self.shootTimer <= 0 then
+        self:fireBullet()
+        self.shootTimer = self.fireRate
+    end
+end
+
+function Enemy:fireBullet()
+    local cos_pitch = math.cos(self.pitch)
+    local bulletVx = math.cos(self.yaw) * cos_pitch * 50
+    local bulletVy = math.sin(self.pitch) * 50
+    local bulletVz = math.sin(self.yaw) * cos_pitch * 50
+    
+    local bullet = Bullet:new(
+        self.x,
+        self.y + self.height / 2,
+        self.z,
+        bulletVx,
+        bulletVy,
+        bulletVz
+    )
+    table.insert(self.bullets, bullet)
+end
+
+function Enemy:takeDamage(damage)
+    self.health = self.health - damage
+end
+
+function Enemy:handleCollisions(world)
+    local checkY = math.floor(self.y - self.height / 2)
+    local blockBelow = world:getBlock(math.floor(self.x), checkY - 1, math.floor(self.z))
+    
+    if blockBelow ~= BLOCK_TYPES.AIR then
+        self.isGrounded = true
+        self.y = checkY + 0.5 + self.height / 2
+        self.vy = math.min(0, self.vy)
+    else
+        self.isGrounded = false
+    end
+end
+
+function Enemy:isAlive()
+    return self.health > 0
+end
+
+function Enemy:getCenter()
+    return {x = self.x, y = self.y, z = self.z}
 end
 
 -- ======================== PERLIN NOISE ========================
@@ -576,7 +792,7 @@ Player.__index = Player
 function Player:new(x, y, z)
     local self = setmetatable({}, Player)
     self.x = x or 50
-    self.y = y or 120
+    self.y = y or 140
     self.z = z or 50
     
     self.vx = 0
@@ -592,6 +808,17 @@ function Player:new(x, y, z)
     self.isGrounded = false
     self.height = 1.8
     self.width = 0.6
+    
+    -- Carnage mode
+    self.isCarnage = false
+    self.carnageHealth = 100
+    self.carnageMaxHealth = 300
+    self.carnageRadius = 3.0
+    self.carnageStrength = 2.0
+    self.carnageTransformTimer = 0
+    self.carnageTransformDuration = 30.0 -- 30 seconds
+    self.grabTarget = nil
+    self.grabCooldown = 0
     
     return self
 end
@@ -626,6 +853,20 @@ function Player:update(world, dt, input)
     self.z = self.z + self.vz * dt
     
     self:handleCollisions(world)
+    
+    -- Carnage mode management
+    if self.isCarnage then
+        self.carnageTransformTimer = self.carnageTransformTimer - dt
+        if self.carnageTransformTimer <= 0 then
+            self:exitCarnage()
+        end
+        
+        -- Enhanced speed in carnage
+        self.speed = 0.35
+        self.carnageRadius = 3.0 + math.sin(self.carnageTransformTimer) * 0.5
+    end
+    
+    self.grabCooldown = math.max(0, self.grabCooldown - dt)
     
     if self.y < -100 then
         self.x = 50
@@ -664,6 +905,60 @@ function Player:getForwardVector()
         math.sin(self.pitch),
         math.cos(self.yaw) * cos_pitch
     }
+end
+
+function Player:transformToCarnage()
+    if not self.isCarnage then
+        self.isCarnage = true
+        self.carnageHealth = self.carnageMaxHealth
+        self.carnageTransformTimer = self.carnageTransformDuration
+        self.height = 2.5
+        self.width = 1.2
+    end
+end
+
+function Player:exitCarnage()
+    self.isCarnage = false
+    self.height = 1.8
+    self.width = 0.6
+end
+
+function Player:grab(enemy, particles)
+    if self.grabCooldown <= 0 and self.isCarnage then
+        if enemy then
+            local dx = enemy.x - self.x
+            local dy = enemy.y - self.y
+            local dz = enemy.z - self.z
+            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            
+            if dist < self.carnageRadius * 2 then
+                -- Grab and throw enemy
+                local throwForce = 200 * self.carnageStrength
+                local ragdoll = Ragdoll:new(enemy.x, enemy.y, enemy.z, 2.0)
+                
+                local normalX = dx / (dist + 0.001)
+                local normalY = dy / (dist + 0.001)
+                local normalZ = dz / (dist + 0.001)
+                
+                ragdoll:applyForce(
+                    normalX * throwForce,
+                    normalY * throwForce + 100,
+                    normalZ * throwForce
+                )
+                particles:emitBlood(enemy.x, enemy.y, enemy.z, 40, 2.0)
+                
+                self.grabCooldown = 0.5
+                return ragdoll
+            end
+        end
+    end
+    return nil
+end
+
+function Player:takeBulletDamage(damage)
+    if self.isCarnage then
+        self.carnageHealth = self.carnageHealth - damage * 0.3 -- Reduced damage in carnage mode
+    end
 end
 
 -- ======================== RAYCAST ========================
@@ -712,6 +1007,7 @@ function Game:new()
     self.player = Player:new(50, 140, 50)
     self.particles = ParticleSystem:new()
     self.ragdolls = {}
+    self.enemies = {}
     self.input = {
         forward = false,
         backward = false,
@@ -719,6 +1015,8 @@ function Game:new()
         right = false,
         jump = false,
         sprint = false,
+        carnage = false,
+        grab = false,
     }
     self.selectedBlock = BLOCK_TYPES.CONCRETE
     self.hotbar = {
@@ -729,6 +1027,19 @@ function Game:new()
         BLOCK_TYPES.GLASS,
     }
     self.hotbarIndex = 1
+    
+    -- Spawn enemies
+    for i = 1, 5 do
+        local angle = (i / 5) * math.pi * 2
+        local dist = 40
+        table.insert(self.enemies, Enemy:new(
+            self.player.x + math.cos(angle) * dist,
+            140,
+            self.player.z + math.sin(angle) * dist,
+            self.player
+        ))
+    end
+    
     return self
 end
 
@@ -736,12 +1047,55 @@ function Game:update(dt)
     self.player:update(self.world, dt, self.input)
     self.particles:update(dt)
     
+    -- Update enemies
+    for i = #self.enemies, 1, -1 do
+        self.enemies[i]:update(dt, self.world, self.player)
+        
+        if not self.enemies[i]:isAlive() then
+            table.remove(self.enemies, i)
+        end
+    end
+    
+    -- Update ragdolls
     for i = #self.ragdolls, 1, -1 do
         self.ragdolls[i]:update(dt, self.world, self.particles)
         if self.ragdolls[i].decayTime <= 0 then
             table.remove(self.ragdolls, i)
         end
     end
+    
+    -- Handle grab input
+    if self.input.grab and self.player.isCarnage and #self.enemies > 0 then
+        local closest = self.enemies[1]
+        local closestDist = math.huge
+        
+        for _, enemy in ipairs(self.enemies) do
+            local dx = enemy.x - self.player.x
+            local dy = enemy.y - self.player.y
+            local dz = enemy.z - self.player.z
+            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            
+            if dist < closestDist then
+                closestDist = dist
+                closest = enemy
+            end
+        end
+        
+        if closestDist < self.player.carnageRadius * 3 then
+            local ragdoll = self.player:grab(closest, self.particles)
+            if ragdoll then
+                for i, enemy in ipairs(self.enemies) do
+                    if enemy == closest then
+                        table.remove(self.enemies, i)
+                        table.insert(self.ragdolls, ragdoll)
+                        break
+                    end
+                end
+            end
+        end
+    end
+    
+    self.input.grab = false
 end
 
 function Game:destroyBlock()
@@ -763,33 +1117,8 @@ function Game:destroyBlock()
     end
 end
 
-function Game:createExplosion(x, y, z, radius)
-    self.world:createExplosion(x, y, z, radius, self.particles)
-    
-    -- Spawn ragdolls with carnage effects
-    for i = 1, math.floor(radius * 3) do
-        local angle = math.random() * math.pi * 2
-        local dist = math.random() * radius * 0.8
-        local ragdoll = Ragdoll:new(
-            x + math.cos(angle) * dist,
-            y + math.random() * radius,
-            z + math.sin(angle) * dist,
-            radius / 5
-        )
-        
-        local forceAngle = math.random() * math.pi * 2
-        local forceStrength = (math.random() + 0.5) * radius * 100
-        ragdoll:applyForce(
-            math.cos(forceAngle) * forceStrength,
-            math.random() * forceStrength * 2.5,
-            math.sin(forceAngle) * forceStrength
-        )
-        
-        ragdoll:applyForce(0, radius * 80, 0)
-        self.particles:emitBlood(x, y, z, math.floor(radius * 15), radius / 3)
-        
-        table.insert(self.ragdolls, ragdoll)
-    end
+function Game:activateCarnage()
+    self.player:transformToCarnage()
 end
 
 function Game:selectHotbar(slot)
@@ -810,6 +1139,8 @@ return {
     Player = Player,
     Game = Game,
     Ragdoll = Ragdoll,
+    Enemy = Enemy,
+    Bullet = Bullet,
     ParticleSystem = ParticleSystem,
     LightingEngine = LightingEngine,
     raycast = raycast,
